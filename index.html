@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="description" content="CEPK Racer — o jogo de corrida oficial do CEPK. Desvie dos carros, pegue escudos e seja o piloto número 1 do CEPK!" />
+  <meta name="theme-color" content="#22c55e" />
+  <title>CEPK Racer — Jogo de Corrida do CEPK</title>
+  <link rel="icon" type="image/svg+xml" href="icon.svg" />
+  <link rel="icon" type="image/png" sizes="512x512" href="icon.png" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ================= PALCO EM TELA CHEIA ================= -->
+  <main class="game-wrapper">
+
+    <!-- Canvas: ocupa 100% da janela, em qualquer proporção -->
+    <div class="stage">
+      <canvas id="game" aria-label="Pista de corrida"></canvas>
+
+      <!-- ================= HUD (sobreposto ao jogo) ================= -->
+      <header class="hud">
+        <img class="hud__logo" src="icon.svg" alt="CEPK" width="38" height="38" />
+        <div class="hud__item">
+          <span class="hud__label">Pontos</span>
+          <span class="hud__value" id="score">0</span>
+        </div>
+        <div class="hud__item hud__item--center">
+          <span class="hud__label">Velocidade</span>
+          <span class="hud__value" id="speed"><span id="speedNum">0</span> <small>km/h</small></span>
+          <div class="speed-bar"><i class="speed-bar__fill" id="speedFill"></i></div>
+        </div>
+        <div class="hud__item hud__item--right">
+          <span class="hud__label">Recorde</span>
+          <span class="hud__value" id="best">0</span>
+        </div>
+        <button class="icon-btn" id="btnFullscreen" title="Tela cheia (F)" aria-label="Tela cheia">⛶</button>
+      </header>
+
+      <!-- Telas de sobreposição (início / pausa / game over) -->
+      <div class="overlay" id="overlay">
+        <div class="panel">
+          <img class="panel__logo" src="icon.svg" alt="Escudo do CEPK" width="96" height="96" />
+          <h1 class="panel__title" id="overlayTitle">CEPK RACER</h1>
+          <p class="panel__text" id="overlayText">
+            Desvie dos carros que descem na pista.<br />
+            Use <kbd>&larr;</kbd> <kbd>&rarr;</kbd> para mover,
+            <kbd>&uarr;</kbd> para acelerar e <kbd>&darr;</kbd> para frear.
+          </p>
+          <div class="panel__actions">
+            <button class="btn" id="btnStart">Jogar</button>
+            <!-- Baixa o jogo completo num único arquivo (HTML autocontido) -->
+            <a class="btn btn--download" id="btnDownload" href="jogo-completo.html" download="CEPK-Racer.html" title="Baixar o jogo completo em um único arquivo">⬇ Baixar o jogo</a>
+          </div>
+          <p class="panel__school">Jogo oficial do <strong>CEPK</strong></p>
+        </div>
+      </div>
+
+      <!-- Aviso temporário (ex.: escudo ativado) -->
+      <div class="toast" id="toast"></div>
+
+      <!-- Controles de toque (aparecem só em telas de celular) -->
+      <div class="touch-controls">
+        <div class="touch-group">
+          <button class="touch-btn" data-key="ArrowLeft" aria-label="Esquerda">&larr;</button>
+          <button class="touch-btn" data-key="ArrowRight" aria-label="Direita">&rarr;</button>
+        </div>
+        <div class="touch-group">
+          <button class="touch-btn touch-btn--brake" data-key="ArrowDown" aria-label="Frear">&darr;</button>
+          <button class="touch-btn touch-btn--gas" data-key="ArrowUp" aria-label="Acelerar">&uarr;</button>
+        </div>
+      </div>
+
+      <p class="hint">
+        Mover: <kbd>&larr;</kbd> <kbd>&rarr;</kbd> &nbsp;|&nbsp;
+        Acelerar: <kbd>&uarr;</kbd> &nbsp;|&nbsp; Frear: <kbd>&darr;</kbd> &nbsp;|&nbsp;
+        Pular: <kbd>Espaço</kbd> &nbsp;|&nbsp; Pausar: <kbd>P</kbd> &nbsp;|&nbsp;
+        Reiniciar: <kbd>R</kbd> &nbsp;|&nbsp; Tela cheia: <kbd>F</kbd>
+      </p>
+    </div>
+  </main>
+
+  <noscript>
+    <p style="color:#eaf2ff;font:16px sans-serif;padding:24px">
+      Este jogo precisa de JavaScript habilitado. Ative o JavaScript no seu navegador e recarregue a página.
+    </p>
+  </noscript>
+
+  <script src="game.js"></script>
+</body>
+</html>

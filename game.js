@@ -1,0 +1,1443 @@
+/* =========================================================================
+   CEPK RACER — jogo de corrida 2D do CEPK (visão de cima, pista com rolagem vertical)
+   -------------------------------------------------------------------------
+   Como o jogo funciona (resumo rápido):
+     1. O cenário (grama, asfalto, faixas da pista) é desenhado a cada quadro,
+        deslocado por uma variável `scroll` que só aumenta. Isso cria a
+        sensação de velocidade sem precisar mover todos os objetos.
+     2. O jogador controla um carrinho no rodapé da tela (setas esquerda/direita).
+     3. Os obstáculos "nascem" acima da tela e descem em direção ao jogador.
+     4. A cada quadro (`requestAnimationFrame`) chamamos `update(dt)` e depois
+        `render()`. `dt` é o tempo em segundos desde o último quadro.
+     5. Pontuação = distância percorrida + bônus por desvios.
+   ========================================================================= */
+
+'use strict';
+
+/* =========================================================================
+   1) CONFIGURAÇÃO
+   Centralize aqui todos os "números mágicos" do jogo. É o lugar ideal para
+   balancear o jogo (dificuldade, velocidades, cores...).
+   ========================================================================= */
+const CONFIG = {
+  // --- Tela (coordenadas lógicas; o CSS escala o canvas para a tela real) ---
+  WIDTH: 480,
+  HEIGHT: 720,
+
+  // --- Pista ---
+  ROAD_RATIO: 0.74,        // largura da pista como fração da largura da tela
+  LANES: 3,                // número MÍNIMO de faixas
+  LANE_TARGET_WIDTH: 84,   // largura desejada de cada faixa (px)
+  ROAD_SPEED_START: 260,   // velocidade inicial da pista (px/s)
+  ROAD_SPEED_MIN: 120,     // velocidade mínima da pista (freio)
+  ROAD_SPEED_MAX: 1000,    // velocidade máxima da pista (px/s)
+  ROAD_ACCEL: 14,          // ganho de velocidade por segundo jogado
+  THROTTLE_ACCEL: 400,     // aceleração extra ao segurar o acelerador (px/s²)
+  BRAKE_DECEL: 900,        // desaceleração ao segurar o freio (px/s²)
+
+  // --- Veículos ---
+  // O tamanho dos carros é calculado em `layout()` a partir da largura da
+  // faixa, para que um carro ocupe de fato a sua faixa. É isso que impede
+  // o jogador de "atravessar" um carro que vem na mesma faixa.
+  PLAYER_LANE_FILL: 0.46,  // fração da faixa ocupada pelo carrinho do jogador
+  PLAYER_ASPECT: 1.90,     // altura / largura do carrinho
+  VEHICLE_LANE_FILL: 0.57, // fração da faixa ocupada pelo carro inimigo
+  VEHICLE_ASPECT: 1.55,    // altura / largura do carro inimigo
+  TRUCK_LANE_FILL: 0.68,   // fração da faixa ocupada pelo caminhão
+  TRUCK_ASPECT: 1.75,      // altura / largura do caminhão
+
+  // --- Jogador ---
+  PLAYER_ACCEL: 2600,    // aceleração lateral (px/s²)
+  PLAYER_MAX_SPEED: 520, // velocidade lateral máxima (px/s)
+  PLAYER_FRICTION: 2400, // quanto o carrinho "escorrega" ao soltar a tecla
+  PLAYER_BASE_Y: 610,    // altura base do rodapé (sem pulo)
+  PLAYER_COLOR: '#22c55e', // verde do CEPK
+
+  // --- Pulo ---
+  JUMP_VELOCITY: 560,    // impulso inicial do pulo (px/s)
+  JUMP_GRAVITY: 1500,    // gravidade (px/s²)
+
+  // --- Obstáculos ---
+  SPAWN_INTERVAL_START: 1.05, // segundos entre surgimentos no começo
+  SPAWN_INTERVAL_MIN: 0.36,   // limite mínimo de segundos entre surgimentos
+  SPAWN_RAMP: 0.011,          // quanto o intervalo cai por segundo de jogo
+  OBSTACLE_SPEED_MIN: 130,    // velocidade extra do obstáculo (px/s)
+  OBSTACLE_SPEED_MAX: 280,
+  OBSTACLE_MIN_GAP: 150,      // distância mínima entre o topo da tela e o jogador
+
+  // --- Bônus ---
+  SHIELD_DURATION: 6,      // segundos de invulnerabilidade após pegar o escudo
+  SHIELD_SPAWN_CHANCE: 0.18, // chance de o escudo aparecer junto de um obstáculo
+  POINTS_PER_METER: 1,     // pontos por metro percorrido
+  POINTS_PER_DODGE: 15,    // bônus por obstáculo desviado
+  POINTS_PER_PICKUP: 50,   // bônus por item coletado
+
+  // --- Cores dos carros inimigos ---
+  OBSTACLE_COLORS: ['#ff3d81', '#ffb03a', '#a970ff', '#3dff9e', '#ff5c5c', '#4d8cff'],
+};
+
+/* =========================================================================
+   2) UTILITÁRIOS
+   Pequenas funções auxiliares usadas em todo o jogo.
+   ========================================================================= */
+
+/** Desenha um retângulo com cantos arredondados (compatível com navegadores antigos). */
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  roundRectPath(ctx, x, y, w, h, r);
+}
+
+/**
+ * Igual ao `roundRect`, mas NÃO abre um novo caminho — permite juntar
+ * vários retângulos e pintá-los com um único `fill()` (mais rápido).
+ */
+function roundRectPath(ctx, x, y, w, h, r) {
+  const radius = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+}
+
+/** Escurece (ou clareia) uma cor hexadecimal. amount < 0 escurece. */
+function shade(hex, amount) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.max(0, Math.min(255, (n >> 16) + amount));
+  const g = Math.max(0, Math.min(255, ((n >> 8) & 0xff) + amount));
+  const b = Math.max(0, Math.min(255, (n & 0xff) + amount));
+  return `rgb(${r},${g},${b})`;
+}
+
+/** Retorna um número aleatório inteiro entre min e max (inclusive). */
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+/** Retorna um item aleatório de um array. */
+function pick(list) {
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+/** Verifica se dois retângulos (AABB) se sobrepõem. */
+function rectsOverlap(a, b) {
+  return (
+    a.x < b.x + b.w &&
+    a.x + a.w > b.x &&
+    a.y < b.y + b.h &&
+    a.y + a.h > b.y
+  );
+}
+
+/* =========================================================================
+   3) ELEMENTOS DA PÁGINA E ESTADO DO JOGO
+   ========================================================================= */
+/* =========================================================================
+   3) ELEMENTOS DA PÁGINA E ESTADO DO JOGO
+   ========================================================================= */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const scoreEl = document.getElementById('score');
+const speedEl = document.getElementById('speed');
+const speedNumEl = document.getElementById('speedNum');
+const speedFill = document.getElementById('speedFill');
+const bestEl = document.getElementById('best');
+const overlay = document.getElementById('overlay');
+const overlayTitle = document.getElementById('overlayTitle');
+const overlayText = document.getElementById('overlayText');
+const btnStart = document.getElementById('btnStart');
+const btnFullscreen = document.getElementById('btnFullscreen');
+const toastEl = document.getElementById('toast');
+
+/* -------------------------------------------------------------------------
+   TAMANHO DO CANVAS (DINÂMICO)
+   A ALTURA lógica é sempre LOGICAL_HEIGHT (720 unidades de jogo) e a LARGURA
+   acompanha a proporção real da janela. Assim o jogo preenche a tela
+   inteira — em qualquer monitor, inclusive em paisagem — sem distorcer
+   as proporções dos carros.
+   ------------------------------------------------------------------------- */
+const LOGICAL_HEIGHT = 720;
+let W = 480;   // largura lógica (varia com a proporção da tela)
+let H = 720;   // altura lógica (sempre 720)
+
+/* -------------------------------------------------------------------------
+   QUALIDADE ADAPTATIVA
+   Em máquinas sem GPU (ou com o navegador em modo software) desenhar o
+   canvas em resolução cheia engasga o jogo. Aqui a resolução do buffer é
+   ajustada sozinha: se o quadro está lento, o buffer encolhe; se está
+   sobrando folga, ele cresce de volta (até o limite da tela).
+   ------------------------------------------------------------------------- */
+const QUALITY = {
+  dpr: 1,          // resolução efetiva do buffer (1 = tamanho da tela)
+  minDpr: 0.6,     // menor resolução aceitável (evita ficar ilegível)
+  maxDpr: 1.5,     // maior resolução (nítida em telas retina)
+  avgFrame: 16,    // média do tempo de quadro (ms)
+  cooldown: 0,     // espera antes de mexer na resolução de novo (ms)
+  simple: false,   // modo simplificado (máquina muito lenta)
+  locked: false,   // true = não mexe na resolução automaticamente
+};
+
+/** Aplica o tamanho do buffer do canvas conforme a qualidade atual. */
+function applyCanvasSize() {
+  const dpr = QUALITY.dpr;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+/**
+ * Ajusta a resolução conforme o tempo de quadro medido.
+ * @param {number} frameMs tempo real do último quadro (ms)
+ */
+function adaptQuality(frameMs) {
+  if (QUALITY.locked) return;
+
+  // Ignora quadros isolados muito lentos (troca de aba, redimensionamento)
+  if (frameMs > 200) return;
+
+  QUALITY.avgFrame = QUALITY.avgFrame * 0.88 + frameMs * 0.12;
+
+  // Redimensionar o canvas recria a textura: só faz isso de tempos em
+  // tempos, senão a própria correção passa a parecer um travamento.
+  QUALITY.cooldown -= frameMs;
+  if (QUALITY.cooldown > 0) return;
+
+  if (QUALITY.avgFrame > 20 && QUALITY.dpr > QUALITY.minDpr) {
+    // Quadro abaixo de ~50 fps: baixa a resolução para voltar a 60 fps
+    QUALITY.dpr = Math.max(QUALITY.minDpr, QUALITY.dpr - 0.15);
+    QUALITY.avgFrame = 16;
+    QUALITY.cooldown = 2000;
+    applyCanvasSize();
+  } else if (QUALITY.avgFrame < 13.5 && QUALITY.dpr < QUALITY.maxDpr) {
+    // Sobra folga (quadro em cima de ~74 fps): pode subir a resolução
+    QUALITY.dpr = Math.min(QUALITY.maxDpr, QUALITY.dpr + 0.1);
+    QUALITY.avgFrame = 16;
+    QUALITY.cooldown = 4000;
+    applyCanvasSize();
+  }
+
+  // Máquina muito lenta (mesmo na resolução mínima): corta os efeitos
+  // mais caros (listras da grama, metade da decoração, fumaça).
+  QUALITY.simple = QUALITY.dpr <= QUALITY.minDpr + 0.001;
+}
+
+/** Geometria da pista (recalculada pela função `layout()`). */
+let ROAD_WIDTH = 480 * CONFIG.ROAD_RATIO;
+let ROAD_LEFT = (W - ROAD_WIDTH) / 2;
+let ROAD_RIGHT = ROAD_LEFT + ROAD_WIDTH;
+let LANES = CONFIG.LANES;          // número de faixas (calculado em layout)
+let LANE_WIDTH = ROAD_WIDTH / LANES;
+let VERGE = 46;   // largura da "vergem" de terra ao lado da pista
+
+/* Tamanho dos veículos — todos derivados da largura da faixa (ver `layout`).
+   Por isso viram variáveis e não constantes de CONFIG. */
+let PLAYER_W = 44;
+let PLAYER_H = 78;
+let CAR_W = 46;
+let CAR_H = 82;
+let TRUCK_W = 58;
+let TRUCK_H = 104;
+
+/** Estado global — tudo que muda durante a partida. */
+const state = {
+  running: false,   // o loop está simulando?
+  paused: false,    // jogo pausado por tecla?
+  over: false,      // game over?
+  score: 0,         // pontos atuais
+  best: 0,          // recorde (salvo no navegador)
+  distance: 0,      // metros percorridos
+  roadSpeed: CONFIG.ROAD_SPEED_START, // velocidade atual da pista (px/s)
+  maxSpeed: CONFIG.ROAD_SPEED_START, // maior velocidade alcançada (px/s)
+  scroll: 0,        // deslocamento acumulado do cenário (px)
+  spawnTimer: 0,    // contador até o próximo obstáculo
+  elapsed: 0,       // tempo total de partida (s)
+  dodges: 0,        // obstáculos desviados
+  shieldTimer: 0,   // segundos restantes de escudo
+  accelerating: false, // acelerador pressionado neste quadro
+  braking: false,      // freio pressionado neste quadro
+};
+
+const player = {
+  x: W / 2,                 // posição horizontal (centro do carrinho)
+  y: CONFIG.PLAYER_BASE_Y, // posição vertical base (rodapé da tela)
+  vx: 0,                   // velocidade lateral
+  jumpY: 0,                // altura do pulo (px, 0 = no chão)
+  jumpV: 0,                // velocidade vertical do pulo
+};
+
+let obstacles = [];  // carros inimigos
+let pickups = [];    // escudos
+let particles = [];  // fumaça / faíscas
+let decor = [];      // objetos na grama (árvores, postes) para dar parallax
+
+const keys = {};      // mapa de teclas pressionadas
+
+/* =========================================================================
+   4) ENTRADA (TECLADO E TOQUE)
+   ========================================================================= */
+
+/* =========================================================================
+   3.1) LAYOUT RESPONSIVO + TELA CHEIA
+   ========================================================================= */
+
+/**
+ * Recalcula o tamanho lógico do canvas e a geometria da pista.
+ * Chamada na inicialização e sempre que a janela muda de tamanho
+ * (redimensionar, girar o celular, entrar/sair de tela cheia).
+ */
+function layout() {
+  // Proporção real da área do jogo (em pixels de CSS)
+  const rect = canvas.getBoundingClientRect();
+  const cssW = Math.max(1, rect.width || window.innerWidth || CONFIG.WIDTH);
+  const cssH = Math.max(1, rect.height || window.innerHeight || CONFIG.HEIGHT);
+
+  // Altura lógica fixa; largura deriva da proporção da tela
+  H = LOGICAL_HEIGHT;
+  W = Math.max(320, Math.min(4000, Math.round(H * (cssW / cssH))));
+
+  // Buffer do canvas em resolução física (compatível com telas Retina).
+  // O limite de 1.5x evita um buffer gigantesco (que é o que faz o jogo
+  // "engasgar" em telas 4K/Retina): 1.5x ainda fica nítido e é bem mais barato.
+  applyCanvasSize();
+
+  // Largura da pista:
+  //  - em telas estreitas (celular em pé) ela ocupa ~78% da largura;
+  //  - em telas largas (paisagem) ela tem largura fixa e fica centralizada.
+  ROAD_WIDTH = W <= 700 ? W * 0.78 : 520;
+  ROAD_LEFT = (W - ROAD_WIDTH) / 2;
+  ROAD_RIGHT = ROAD_LEFT + ROAD_WIDTH;
+
+  // Número de faixas: mantém cada faixa com ~LANE_TARGET_WIDTH pixels, para
+  // que o carro do jogador e os carros inimigos caibam "de verdade" na faixa.
+  LANES = Math.max(CONFIG.LANES, Math.round(ROAD_WIDTH / CONFIG.LANE_TARGET_WIDTH));
+  LANE_WIDTH = ROAD_WIDTH / LANES;
+  VERGE = Math.min(46, ROAD_LEFT * 0.5);
+
+  // Tamanho dos veículos em função da faixa
+  PLAYER_W = Math.round(LANE_WIDTH * CONFIG.PLAYER_LANE_FILL);
+  PLAYER_H = Math.round(PLAYER_W * CONFIG.PLAYER_ASPECT);
+  CAR_W = Math.round(LANE_WIDTH * CONFIG.VEHICLE_LANE_FILL);
+  CAR_H = Math.round(CAR_W * CONFIG.VEHICLE_ASPECT);
+  TRUCK_W = Math.round(LANE_WIDTH * CONFIG.TRUCK_LANE_FILL);
+  TRUCK_H = Math.round(TRUCK_W * CONFIG.TRUCK_ASPECT);
+
+  // Reposiciona o jogador se ele estava fora da pista (janela redimensionada).
+  // Fora de partida, o carrinho fica sempre no centro da pista.
+  const halfW = PLAYER_W / 2;
+  if (state.running) {
+    player.x = Math.max(ROAD_LEFT + halfW, Math.min(ROAD_RIGHT - halfW, player.x));
+  } else {
+    player.x = laneCenter(Math.floor(LANES / 2));
+  }
+
+  // Reorganiza a decoração da grama para a nova largura
+  if (decor.length) buildDecor();
+
+  // Gradientes do cenário (recriados só quando a tela muda)
+  buildRoadGradients();
+
+  // Reenquadra os obstáculos que já estão na pista (novos tamanhos/faixas)
+  reframeObstacles();
+}
+
+/**
+ * Gradientes usados no cenário. Eles só dependem do tamanho da tela, então
+ * são criados uma vez por `layout()` em vez de a cada quadro.
+ */
+let roadGradients = null;
+
+function buildRoadGradients() {
+  const asphalt = ctx.createLinearGradient(ROAD_LEFT, 0, ROAD_RIGHT, 0);
+  asphalt.addColorStop(0, 'rgba(0,0,0,0.45)');
+  asphalt.addColorStop(0.15, 'rgba(255,255,255,0.02)');
+  asphalt.addColorStop(0.85, 'rgba(255,255,255,0.02)');
+  asphalt.addColorStop(1, 'rgba(0,0,0,0.45)');
+
+  roadGradients = { asphalt };
+}
+
+/** Recentraliza e redimensiona os obstáculos após um redimensionamento. */
+function reframeObstacles() {
+  for (const ob of obstacles) {
+    ob.lane = Math.max(0, Math.min(LANES - 1, ob.lane));
+    ob.x = laneCenter(ob.lane);
+    ob.w = ob.type === 'truck' ? TRUCK_W : CAR_W;
+    ob.h = ob.type === 'truck' ? TRUCK_H : CAR_H;
+  }
+}
+
+/** Entra/sai da tela cheia. */
+function toggleFullscreen() {
+  const doc = document;
+  const el = doc.documentElement;
+
+  if (!doc.fullscreenElement && !doc.webkitFullscreenElement) {
+    const req = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (req) {
+      const result = req.call(el);
+      // Alguns navegadores devolvem Promise, outros não
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+    }
+  } else {
+    const exit = doc.exitFullscreen || doc.webkitExitFullscreen;
+    if (exit) {
+      const result = exit.call(doc);
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+    }
+  }
+}
+
+/** Entra em tela cheia silenciosamente (usado ao apertar "Jogar"). */
+function enterFullscreen() {
+  if (document.fullscreenElement || document.webkitFullscreenElement) return;
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (!req) return;
+  try {
+    const result = req.call(el);
+    if (result && typeof result.catch === 'function') result.catch(() => {});
+  } catch (_) {
+    /* navegador bloqueou — o jogo funciona igual sem tela cheia */
+  }
+}
+
+btnFullscreen.addEventListener('click', toggleFullscreen);
+
+// Recalcula o layout quando a janela muda (inclui entrar/sair de tela cheia)
+window.addEventListener('resize', layout);
+window.addEventListener('orientationchange', () => setTimeout(layout, 100));
+document.addEventListener('fullscreenchange', () => setTimeout(layout, 50));
+
+const LEFT_KEYS = ['ArrowLeft', 'a', 'A'];
+
+const RIGHT_KEYS = ['ArrowRight', 'd', 'D'];
+
+const UP_KEYS = ['ArrowUp', 'w', 'W'];     // acelerar
+
+const DOWN_KEYS = ['ArrowDown', 's', 'S'];  // frear
+
+function keyDownHandler(e) {
+  // Impede a rolagem da página com setas/espaço
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) {
+    e.preventDefault();
+  }
+  keys[e.key] = true;
+
+  if (e.key === ' ' && state.running && !state.paused && player.jumpY === 0) {
+    player.jumpV = CONFIG.JUMP_VELOCITY; // pulo
+  }
+  if (e.key === 'p' || e.key === 'P') togglePause();
+  if (e.key === 'r' || e.key === 'R') startGame();
+  if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+  if (e.key === 'l' || e.key === 'L') toggleFps();
+
+  // Enter/Espaço também iniciam o jogo a partir da tela inicial
+  if (!state.running && !state.over && (e.key === 'Enter' || e.key === ' ')) {
+    startGame();
+  }
+}
+
+function keyUpHandler(e) {
+  keys[e.key] = false;
+}
+
+window.addEventListener('keydown', keyDownHandler);
+window.addEventListener('keyup', keyUpHandler);
+
+// Solta as teclas se a aba perder o foco (evita o carrinho "grudar" na parede)
+window.addEventListener('blur', () => {
+  for (const key in keys) keys[key] = false;
+});
+
+// Botões de toque para celular (usam o mesmo mapa de teclas do teclado)
+document.querySelectorAll('.touch-btn').forEach((btn) => {
+  const key = btn.dataset.key;
+  if (!key) return;
+  const down = (e) => { e.preventDefault(); keys[key] = true; btn.dataset.active = '1'; };
+  const up = (e) => { e.preventDefault(); keys[key] = false; btn.dataset.active = '0'; };
+  btn.addEventListener('touchstart', down, { passive: false });
+  btn.addEventListener('touchend', up);
+  btn.addEventListener('touchcancel', up);
+  btn.addEventListener('mousedown', down);
+  btn.addEventListener('mouseup', up);
+  btn.addEventListener('mouseleave', up);
+});
+
+// Arrastar o dedo na tela também move o carrinho
+let touchTargetX = null;
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const touch = e.touches[0];
+  touchTargetX = ((touch.clientX - rect.left) / rect.width) * W;
+});
+
+/* =========================================================================
+   5) FLUXO DO JOGO (INICIAR, PAUSAR, GAME OVER)
+   ========================================================================= */
+function startGame() {
+  clearTimeout(autoStartTimer);   // cancela o início automático pendente
+
+  // Reinicia todos os contadores
+  state.running = true;
+  state.paused = false;
+  state.over = false;
+  state.score = 0;
+  state.distance = 0;
+  state.roadSpeed = CONFIG.ROAD_SPEED_START;
+  state.maxSpeed = CONFIG.ROAD_SPEED_START;
+  state.scroll = 0;
+  state.spawnTimer = 0;
+  state.elapsed = 0;
+  state.dodges = 0;
+  state.shieldTimer = 0;
+  state.accelerating = false;
+  state.braking = false;
+
+  player.x = laneCenter(Math.floor(LANES / 2));   // centro da faixa do meio
+  player.y = CONFIG.PLAYER_BASE_Y;
+  player.vx = 0;
+  player.jumpY = 0;
+  player.jumpV = 0;
+
+  obstacles = [];
+  pickups = [];
+  particles = [];
+  touchTargetX = null;
+
+  buildDecor();
+  overlay.hidden = true;
+  hudCache.score = -1;   // força a atualização do HUD na próxima quadro
+  hudCache.kmh = -1;
+  hudCache.best = -1;
+  hudCache.pct = -1;
+  hudCache.state = '';
+  updateHUD();
+}
+
+function togglePause() {
+  if (!state.running || state.over) return;
+  state.paused = !state.paused;
+  if (state.paused) {
+    showOverlay('PAUSADO', 'Pressione <kbd>P</kbd> para continuar.', 'Continuar');
+  } else {
+    overlay.hidden = true;
+  }
+}
+
+function gameOver() {
+  state.over = true;
+  state.running = false;
+
+  // Salva o recorde no localStorage
+  if (state.score > state.best) {
+    state.best = Math.floor(state.score);
+    storage.set(BEST_KEY, String(state.best));
+  }
+
+  showOverlay(
+    'GAME OVER',
+    `<div class="panel__stats">
+       <div><span>Pontos</span><strong>${Math.floor(state.score)}</strong></div>
+       <div><span>Distância</span><strong>${Math.floor(state.distance)}m</strong></div>
+       <div><span>Desvios</span><strong>${state.dodges}</strong></div>
+       <div><span>Vel. máx.</span><strong>${Math.round(state.maxSpeed * 0.28)} km/h</strong></div>
+       <div><span>Recorde</span><strong>${Math.floor(state.best)}</strong></div>
+     </div>
+     Domine a pista do <strong>CEPK</strong>!<br />
+     Pressione <kbd>R</kbd> ou o botão para jogar de novo.`,
+    'Jogar novamente'
+  );
+}
+
+function showOverlay(title, html, buttonLabel) {
+  overlayTitle.textContent = title;
+  overlayText.innerHTML = html;
+  btnStart.textContent = buttonLabel;
+  overlay.hidden = false;
+}
+
+btnStart.addEventListener('click', () => {
+  // Se estiver pausado, o botão apenas continua.
+  if (state.paused) {
+    togglePause();
+    return;
+  }
+
+  // Tenta ocupar a tela inteira — mas só quando a página é servida por
+  // http(s). Em file:// alguns navegadores bloqueiam o pedido e a página
+  // pode piscar/preencher de preto; nesses casos use o botão ⛶ ou a tecla F.
+  if (location.protocol === 'http:' || location.protocol === 'https:') {
+    enterFullscreen();
+  }
+
+  startGame();
+});
+
+/* Botão "Baixar o jogo".
+   Na versão normal (index.html + jogo-completo.html), o link aponta para
+   o arquivo único e baixa normalmente. Já no arquivo único baixado, o link
+   relativo quebraria — então interceptamos o clique e baixamos uma cópia
+   do próprio documento (funciona até offline em file://). */
+const btnDownload = document.getElementById('btnDownload');
+if (btnDownload) {
+  btnDownload.addEventListener('click', (e) => {
+    if (document.documentElement.dataset.singleFile !== '1') return; // href normal
+    e.preventDefault();
+    const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'CEPK-Racer.html';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+}
+
+/* =========================================================================
+   6) GERAÇÃO DO CENÁRIO E DOS OBSTÁCULOS
+   ========================================================================= */
+
+/** Cria os objetos decorativos na grama (esquerda/direita da pista). */
+function buildDecor() {
+  decor = [];
+  // Quantidade proporcional à área de grama (telas largas precisam de mais)
+  const count = Math.max(24, Math.round(30 * (W / 480)));
+  const grassLeft = Math.max(0, ROAD_LEFT - VERGE);        // grama à esquerda
+  const grassRight = Math.max(0, W - ROAD_RIGHT - VERGE);  // grama à direita
+  for (let i = 0; i < count; i++) {
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const x = side < 0
+      ? Math.random() * grassLeft * 0.95
+      : ROAD_RIGHT + VERGE + Math.random() * grassRight * 0.95;
+    decor.push({
+      x,
+      y: Math.random() * H,
+      type: Math.random() < 0.5 ? 'tree' : 'post',
+      scale: 0.7 + Math.random() * 0.7,
+    });
+  }
+}
+
+/** Calcula a posição central de uma faixa. */
+function laneCenter(lane) {
+  return ROAD_LEFT + LANE_WIDTH * (lane + 0.5);
+}
+
+/** Cria um novo obstáculo (carro inimigo) no topo da tela. */
+function spawnObstacle() {
+  const lane = randInt(0, LANES - 1);
+  const isTruck = Math.random() < 0.25;
+
+  const w = isTruck ? TRUCK_W : CAR_W;
+  const h = isTruck ? TRUCK_H : CAR_H;
+
+  obstacles.push({
+    x: laneCenter(lane),
+    y: -h - Math.random() * 80,           // nasce acima da tela
+    w,
+    h,
+    lane,                                 // faixa em que o carro está
+    speed: CONFIG.OBSTACLE_SPEED_MIN +
+            Math.random() * (CONFIG.OBSTACLE_SPEED_MAX - CONFIG.OBSTACLE_SPEED_MIN),
+    color: pick(CONFIG.OBSTACLE_COLORS),
+    type: isTruck ? 'truck' : 'car',
+    passed: false,                        // jáScores
+  });
+
+  // Às vezes um escudo aparece junto (para dar respiro ao jogador)
+  if (Math.random() < CONFIG.SHIELD_SPAWN_CHANCE) {
+    pickups.push({
+      x: laneCenter(randInt(0, LANES - 1)),
+      y: -40,
+      r: 16,
+      speed: 120,
+    });
+  }
+}
+
+/* =========================================================================
+   7) ATUALIZAÇÃO (LÓGICA DO JOGO)
+   Chamada a cada quadro com o tempo decorrido (dt) em segundos.
+   ========================================================================= */
+function update(dt) {
+  if (!state.running || state.paused || state.over) return;
+
+  state.elapsed += dt;
+
+  // --- 7.1 Acelerador e freio + dificuldade progressiva -------------------
+  // O jogador controla a velocidade: ↑/W acelera, ↓/S freia.
+  //  - acelerar deixa a pista (e os obstáculos) virem mais rápido: mais
+  //    pontos por segundo, mas menos tempo para desviar;
+  //  - frear dá mais tempo para reagir, mas rende menos pontos.
+  state.accelerating = UP_KEYS.some((k) => keys[k]);
+  state.braking = DOWN_KEYS.some((k) => keys[k]);
+
+  let accel = CONFIG.ROAD_ACCEL;              // aceleração automática
+  if (state.braking) accel = -CONFIG.BRAKE_DECEL;
+  else if (state.accelerating) accel = CONFIG.THROTTLE_ACCEL;
+
+  state.roadSpeed = Math.max(
+    CONFIG.ROAD_SPEED_MIN,
+    Math.min(
+      CONFIG.ROAD_SPEED_MAX,
+      state.roadSpeed + accel * dt
+    )
+  );
+  if (state.roadSpeed > state.maxSpeed) state.maxSpeed = state.roadSpeed;
+
+  // Distância (metros) — 10 pixels ≈ 1 metro
+  const traveled = state.roadSpeed * dt;
+  state.distance += traveled / 10;
+  state.score += (traveled / 10) * CONFIG.POINTS_PER_METER;
+
+  // Deslocamento do cenário
+  state.scroll += traveled;
+
+  // --- 7.2 Jogador: movimento lateral ----------------------------------
+  let direction = 0;
+  if (LEFT_KEYS.some((k) => keys[k])) direction -= 1;
+  if (RIGHT_KEYS.some((k) => keys[k])) direction += 1;
+
+  // No celular, arrastar o dedo define a posição-alvo
+  if (touchTargetX !== null) {
+    const diff = touchTargetX - player.x;
+    direction = Math.abs(diff) < 6 ? 0 : Math.sign(diff);
+  }
+
+  if (direction !== 0) {
+    player.vx += direction * CONFIG.PLAYER_ACCEL * dt;
+    player.vx = Math.max(-CONFIG.PLAYER_MAX_SPEED, Math.min(CONFIG.PLAYER_MAX_SPEED, player.vx));
+  } else {
+    // Atrito: o carrinho desacelera aos poucos
+    const friction = CONFIG.PLAYER_FRICTION * dt;
+    player.vx = Math.abs(player.vx) <= friction ? 0 : player.vx - Math.sign(player.vx) * friction;
+  }
+
+  player.x += player.vx * dt;
+
+  // Mantém o carrinho dentro da pista
+  const halfW = PLAYER_W / 2;
+  const minX = ROAD_LEFT + halfW;
+  const maxX = ROAD_RIGHT - halfW;
+  if (player.x < minX) { player.x = minX; player.vx = 0; }
+  if (player.x > maxX) { player.x = maxX; player.vx = 0; }
+
+  // --- 7.3 Pulo ----------------------------------------------------------
+  if (player.jumpY > 0 || player.jumpV > 0) {
+    player.jumpY += player.jumpV * dt;
+    player.jumpV -= CONFIG.JUMP_GRAVITY * dt;
+    if (player.jumpY <= 0) {
+      player.jumpY = 0;
+      player.jumpV = 0;
+    }
+  }
+
+  // --- 7.4 Espuma/fumaça atrás do carrinho -------------------------------
+  if (Math.abs(player.vx) > 120 && Math.random() < 0.6) {
+    spawnParticle(player.x, player.y + PLAYER_H / 2 - 4, {
+      vx: -player.vx * 0.15 + randInt(-20, 20),
+      vy: randInt(20, 70),
+      life: 0.5,
+      size: randInt(3, 7),
+      color: 'rgba(200,210,235,0.5)',
+    });
+  }
+
+  // --- 7.4b Chama do escapamento ao acelerar / fumaça ao frear -----------
+  if (state.accelerating && Math.random() < 0.5) {
+    spawnParticle(player.x + randInt(-6, 6), player.y + PLAYER_H / 2 - 6, {
+      vx: randInt(-25, 25),
+      vy: randInt(60, 150),
+      life: randInt(0.25, 0.5),
+      size: randInt(3, 6),
+      color: pick(['#ffd166', '#ff8a3d', '#ff5c5c']),
+    });
+  }
+  if (state.braking && Math.random() < 0.7) {
+    spawnParticle(player.x + randInt(-8, 8), player.y + PLAYER_H / 2 - 8, {
+      vx: randInt(-30, 30),
+      vy: randInt(10, 40),
+      life: 0.4,
+      size: randInt(4, 8),
+      color: 'rgba(255,255,255,0.45)',
+    });
+  }
+
+  // --- 7.5 Surto de obstáculos -----------------------------------------
+  state.spawnTimer -= dt;
+  if (state.spawnTimer <= 0) {
+    spawnObstacle();
+    const interval = Math.max(
+      CONFIG.SPAWN_INTERVAL_MIN,
+      CONFIG.SPAWN_INTERVAL_START - state.elapsed * CONFIG.SPAWN_RAMP
+    );
+    state.spawnTimer = interval * (0.75 + Math.random() * 0.5); // pequena variação
+  }
+
+  // --- 7.6 Atualiza obstáculos e checa colisões -------------------------
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    const ob = obstacles[i];
+    ob.y += (state.roadSpeed + ob.speed) * dt;
+
+    // Saiu da tela por baixo? Remove e credita o desvio.
+    if (ob.y - ob.h / 2 > H) {
+      obstacles.splice(i, 1);
+      if (!ob.passed) {
+        ob.passed = true;
+        state.dodges++;
+        state.score += CONFIG.POINTS_PER_DODGE;
+      }
+      continue;
+    }
+
+    if (checkCollision(ob)) {
+      if (state.shieldTimer > 0) {
+        // Escudo ativo: o obstáculo é destruído em vez de acabar com o jogo
+        burst(ob.x, ob.y, ob.color, 14);
+        obstacles.splice(i, 1);
+      } else {
+        burst(player.x, player.y, '#ff3d81', 26);
+        gameOver();
+        return;
+      }
+    }
+  }
+
+  // --- 7.7 Atualiza escudos (itens) --------------------------------------
+  for (let i = pickups.length - 1; i >= 0; i--) {
+    const p = pickups[i];
+    p.y += (state.roadSpeed + p.speed) * dt;
+
+    if (p.y - p.r > H) {
+      pickups.splice(i, 1);
+      continue;
+    }
+
+    // Colisão do jogador com o item
+    const dx = player.x - p.x;
+    const dy = (player.y - player.jumpY) - p.y;
+    if (Math.hypot(dx, dy) < p.r + 18) {
+      state.shieldTimer = CONFIG.SHIELD_DURATION;
+      state.score += CONFIG.POINTS_PER_PICKUP;
+      showToast('ESCUDO DO CEPK ATIVADO!');
+      burst(p.x, p.y, '#3dff9e', 16);
+      pickups.splice(i, 1);
+    }
+  }
+
+  // --- 7.8 Temporizadores ------------------------------------------------
+  if (state.shieldTimer > 0) {
+    state.shieldTimer = Math.max(0, state.shieldTimer - dt);
+  }
+
+  // --- 7.9 Partículas ----------------------------------------------------
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const pt = particles[i];
+    pt.x += pt.vx * dt;
+    pt.y += pt.vy * dt;
+    pt.vy += 120 * dt;      // gravidade leve
+    pt.life -= dt;
+    if (pt.life <= 0) particles.splice(i, 1);
+  }
+
+  updateHUD();
+}
+
+/** Retângulo de colisão do jogador (considera o pulo). */
+function playerRect() {
+  return {
+    x: player.x - PLAYER_W / 2,
+    y: player.y - player.jumpY - PLAYER_H / 2,
+    w: PLAYER_W,
+    h: PLAYER_H,
+  };
+}
+
+/**
+ * Faixa em que o jogador está: a faixa em que o carrinho está *dentro*.
+ * Usado para a regra de colisão: quem está na mesma faixa é atingido.
+ */
+function playerLane() {
+  const idx = Math.floor((player.x - ROAD_LEFT) / LANE_WIDTH);
+  return Math.max(0, Math.min(LANES - 1, idx));
+}
+
+/**
+ * Testa colisão entre o jogador e um obstáculo.
+ *
+ * Regra principal: um carro inimigo OCUPA a faixa em que está. Portanto,
+ * se o jogador está na mesma faixa, a colisão acontece sempre — mesmo que
+ * o carrinho esteja encostado na borda da pista (era esse o bug: o carro
+ * da faixa do lado passava por trás/através do jogador).
+ *
+ * Regra secundária: fora da faixa, só há colisão se as caixas desenhadas
+ * realmente se sobrepõem (borda da faixa contra borda da faixa).
+ */
+function checkCollision(obstacle) {
+  const p = playerRect();
+  const o = {
+    x: obstacle.x - obstacle.w / 2,
+    y: obstacle.y - obstacle.h / 2,
+    w: obstacle.w,
+    h: obstacle.h,
+  };
+
+  // Precisa estar na mesma altura (senão o carro ainda não chegou)
+  const padY = 4;
+  const vertical = (
+    p.y + padY < o.y + o.h &&
+    p.y + p.h - padY > o.y
+  );
+  if (!vertical) return false;
+
+  // Mesma faixa → colisão garantida
+  if (obstacle.lane === playerLane()) return true;
+
+  // Faixas vizinhas → colisão só se as caixas desenhadas se encostarem
+  const pad = 6;
+  return rectsOverlap(
+    { x: p.x + pad, y: p.y + pad, w: p.w - pad * 2, h: p.h - pad * 2 },
+    { x: o.x + pad, y: o.y + pad, w: o.w - pad * 2, h: o.h - pad * 2 }
+  );
+}
+
+/* =========================================================================
+   8) PARTÍCULAS
+   ========================================================================= */
+function spawnParticle(x, y, opts = {}) {
+  // Limite de partículas: em máquinas lentas o excesso de partículas
+  // derruba o quadro sem mudar a jogabilidade.
+  if (particles.length > 140) return;
+  particles.push({
+    x, y,
+    vx: opts.vx ?? 0,
+    vy: opts.vy ?? 0,
+    life: opts.life ?? 0.6,
+    maxLife: opts.life ?? 0.6,
+    size: opts.size ?? 5,
+    color: opts.color ?? '#fff',
+  });
+}
+
+/** Explosão de partículas (usada em colisões e pickups). */
+function burst(x, y, color, count = 12) {
+  for (let i = 0; i < count; i++) {
+    const angle = (Math.PI * 2 * i) / count + Math.random() * 0.6;
+    const speed = randInt(80, 260);
+    spawnParticle(x, y, {
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: randInt(0.3, 0.7),
+      size: randInt(3, 8),
+      color,
+    });
+  }
+}
+
+/* =========================================================================
+   9) DESENHO (RENDER)
+   ========================================================================= */
+
+/**
+ * Degrade do corpo do carro, guardado por cor+largura.
+ * Criar um gradiente novo a cada carro a cada quadro é desperdício: os
+ * gradientes são reaproveitados (o canvas aplica a transformação atual na
+ * hora de pintar, então o resultado é idêntico ao de antes).
+ */
+const carGradientCache = new Map();
+
+function carGradient(color, halfW) {
+  const key = `${color}|${halfW}`;
+  let grad = carGradientCache.get(key);
+  if (!grad) {
+    grad = ctx.createLinearGradient(-halfW, 0, halfW, 0);
+    grad.addColorStop(0, shade(color, -45));
+    grad.addColorStop(0.45, color);
+    grad.addColorStop(1, shade(color, -45));
+    carGradientCache.set(key, grad);
+  }
+  return grad;
+}
+
+/** Desenha um carrinho visto de cima. `facing` = 'up' (jogador) ou 'down'. */
+function drawCar(cx, cy, w, h, color, facing = 'up') {
+  const halfW = w / 2;
+  const halfH = h / 2;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  if (facing === 'down') ctx.scale(1, -1); // inverte o carro (vira de frente)
+
+  // Sombra
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  roundRect(ctx, -halfW + 3, -halfH + 6, w, h, 10);
+  ctx.fill();
+
+  // Rodas (as quatro de uma vez)
+  ctx.fillStyle = '#12141c';
+  ctx.beginPath();
+  roundRectPath(ctx, -halfW - 3, -halfH + 10, 9, 18, 3);
+  roundRectPath(ctx, -halfW - 3, halfH - 30, 9, 18, 3);
+  roundRectPath(ctx, halfW - 6, -halfH + 10, 9, 18, 3);
+  roundRectPath(ctx, halfW - 6, halfH - 30, 9, 18, 3);
+  ctx.fill();
+
+  // Corpo com degrade lateral
+  ctx.fillStyle = carGradient(color, halfW);
+  roundRect(ctx, -halfW, -halfH, w, h, 11);
+  ctx.fill();
+
+  // Vidros
+  ctx.fillStyle = 'rgba(18,28,45,0.92)';
+  ctx.beginPath();
+  roundRectPath(ctx, -halfW + 8, -halfH + 16, w - 16, 20, 6);
+  roundRectPath(ctx, -halfW + 8, halfH - 38, w - 16, 15, 6);
+  ctx.fill();
+
+  // Faixa central (branco)
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillRect(-3, -halfH + 40, 6, h - 80);
+
+  // Faróis (frente do carro = lado -y)
+  ctx.fillStyle = '#fff6c9';
+  ctx.beginPath();
+  roundRectPath(ctx, -halfW + 6, -halfH + 4, 11, 6, 3);
+  roundRectPath(ctx, halfW - 17, -halfH + 4, 11, 6, 3);
+  ctx.fill();
+
+  // Lanternas traseiras
+  ctx.fillStyle = '#ff4d5e';
+  ctx.beginPath();
+  roundRectPath(ctx, -halfW + 6, halfH - 9, 11, 6, 3);
+  roundRectPath(ctx, halfW - 17, halfH - 9, 11, 6, 3);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+/** Desenha o cenário (grama + pista) com rolagem. */
+function drawRoad() {
+  // Grama — cor sólida (pintar a tela inteira com gradiente é caro demais
+  // em máquinas sem GPU e a diferença visual é mínima)
+  ctx.fillStyle = '#14301d';
+  ctx.fillRect(0, 0, W, H);
+
+  // Faixas de grama com parallax (rolam mais rápido que a pista).
+  // Só são pintadas FORA da pista (a parte de baixo seria coberta mesmo).
+  const stripe = 120;
+  const off = (state.scroll * 1.25) % (stripe * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.028)';
+  const grassW = ROAD_LEFT;
+  const grassX2 = ROAD_RIGHT;
+  const grassW2 = W - ROAD_RIGHT;
+  if (!QUALITY.simple) {
+    for (let y = -stripe * 2 + off; y < H + stripe * 2; y += stripe * 2) {
+      if (grassW > 0) ctx.fillRect(0, y, grassW, stripe);
+      if (grassW2 > 0) ctx.fillRect(grassX2, y, grassW2, stripe);
+    }
+  }
+
+  // Decorações na grama (árvores/postes) — desenhadas em dois lotes,
+  // sem save/restore para cada objeto (fica bem mais barato)
+  const y = (d) => ((d.y + state.scroll * 1.25) % (H + 80)) - 40;
+  ctx.globalAlpha = 0.85;
+  const passo = QUALITY.simple ? 2 : 1;   // em máquina lenta, metade da decoração
+  ctx.fillStyle = '#0b1b10';
+  ctx.beginPath();
+  for (let i = 0; i < decor.length; i += passo) {
+    const d = decor[i];
+    if (d.type !== 'tree') continue;
+    ctx.moveTo(d.x + 16 * d.scale, y(d));
+    ctx.arc(d.x, y(d), 16 * d.scale, 0, Math.PI * 2);
+  }
+  ctx.fill();
+  ctx.fillStyle = '#1f5c31';
+  ctx.beginPath();
+  for (let i = 0; i < decor.length; i += passo) {
+    const d = decor[i];
+    if (d.type !== 'tree') continue;
+    ctx.moveTo(d.x + 12 * d.scale, y(d) - 3 * d.scale);
+    ctx.arc(d.x, y(d) - 3 * d.scale, 12 * d.scale, 0, Math.PI * 2);
+  }
+  ctx.fill();
+  ctx.fillStyle = '#2b3550';
+  ctx.beginPath();
+  for (let i = 0; i < decor.length; i += passo) {
+    const d = decor[i];
+    if (d.type !== 'post') continue;
+    ctx.rect(d.x - 3, y(d) - 18, 6, 36);
+  }
+  ctx.fill();
+  ctx.fillStyle = '#ffd166';
+  ctx.beginPath();
+  for (let i = 0; i < decor.length; i += passo) {
+    const d = decor[i];
+    if (d.type !== 'post') continue;
+    ctx.rect(d.x - 5, y(d) - 22, 10, 6);
+  }
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // Asfalto
+  ctx.fillStyle = '#1b1e26';
+  ctx.fillRect(ROAD_LEFT, 0, ROAD_WIDTH, H);
+
+  // "Vergem" de terra logo ao lado da pista (ancora visualmente a estrada)
+  const VERGE_W = VERGE;
+  ctx.fillStyle = '#2b2a24';
+  ctx.fillRect(ROAD_LEFT - VERGE_W, 0, VERGE_W, H);
+  ctx.fillRect(ROAD_RIGHT, 0, VERGE_W, H);
+  // Textura da verge rolando junto com o cenário
+  ctx.fillStyle = 'rgba(0,0,0,0.16)';
+  const vergeOff = state.scroll % 90;
+  for (let y = -90 + vergeOff; y < H + 90; y += 90) {
+    ctx.fillRect(ROAD_LEFT - VERGE_W, y, VERGE_W, 45);
+    ctx.fillRect(ROAD_RIGHT, y + 45, VERGE_W, 45);
+  }
+
+  // Brilho lateral do asfalto
+  ctx.fillStyle = roadGradients ? roadGradients.asphalt : 'rgba(0,0,0,0.2)';
+  ctx.fillRect(ROAD_LEFT, 0, ROAD_WIDTH, H);
+
+  // Bordas da pista (faixas contínuas, brancas)
+  ctx.fillStyle = '#e8edf7';
+  ctx.fillRect(ROAD_LEFT - 4, 0, 4, H);
+  ctx.fillRect(ROAD_RIGHT, 0, 4, H);
+  // Bordas vermelhas (como pista de corrida)
+  ctx.fillStyle = '#e6405a';
+  ctx.fillRect(ROAD_LEFT - 8, 0, 4, H);
+  ctx.fillRect(ROAD_RIGHT + 4, 0, 4, H);
+
+  // Faixas tracejadas entre as lanes
+  const dash = 42;      // comprimento do tracejado
+  const period = 78;    // distância entre tracejados
+  const offset = state.scroll % period;
+  ctx.fillStyle = 'rgba(232,237,247,0.75)';
+  for (let lane = 1; lane < LANES; lane++) {
+    const x = ROAD_LEFT + LANE_WIDTH * lane - 3;
+    for (let y = -period + offset; y < H + period; y += period) {
+      ctx.fillRect(x, y, 6, dash);
+    }
+  }
+}
+
+/** Desenha os itens (escudos). */
+function drawPickups() {
+  for (const p of pickups) {
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(state.elapsed * 3);
+
+    ctx.fillStyle = 'rgba(61,255,158,0.25)';
+    ctx.beginPath();
+    ctx.arc(0, 0, p.r + 6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#3dff9e';
+    ctx.beginPath();
+    ctx.arc(0, 0, p.r, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#0d2b1c';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('S', 0, 1);
+    ctx.restore();
+  }
+}
+
+/** Desenha o jogador (com escudo e sombra de pulo). */
+function drawPlayer() {
+  const y = player.y - player.jumpY;
+
+  // Sombra no chão (some quando o carro está no alto do pulo)
+  ctx.save();
+  ctx.globalAlpha = Math.max(0.15, 0.45 - player.jumpY / 260);
+  ctx.fillStyle = '#000';
+  ctx.beginPath();
+  ctx.ellipse(player.x, player.y + PLAYER_H / 2 + 6, PLAYER_W * 0.5, 9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Anel de escudo
+  if (state.shieldTimer > 0) {
+    const pulse = 1 + Math.sin(state.elapsed * 10) * 0.08;
+    ctx.save();
+    ctx.globalAlpha = 0.35 + 0.25 * Math.sin(state.elapsed * 8);
+    ctx.strokeStyle = '#3dff9e';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(player.x, y, PLAYER_W * 0.85 * pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Rotaciona levemente o carro conforme a direção (sensação de direção)
+  ctx.save();
+  ctx.translate(player.x, y);
+  ctx.rotate(player.vx / 1600);
+  drawCar(0, 0, PLAYER_W, PLAYER_H, CONFIG.PLAYER_COLOR, 'up');
+  ctx.restore();
+}
+
+/** Desenha as partículas (sem save/restore por partícula — é mais barato). */
+function drawParticles() {
+  for (const pt of particles) {
+    ctx.globalAlpha = Math.max(0, pt.life / pt.maxLife);
+    ctx.fillStyle = pt.color;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, pt.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** Desenha o quadro completo. */
+function render() {
+  // Sem `clearRect`: a grama já cobre a tela inteira (pintar duas vezes
+  // a tela toda era um dos maiores custos do quadro).
+  drawRoad();
+
+  for (const ob of obstacles) {
+    drawCar(ob.x, ob.y, ob.w, ob.h, ob.color, 'down');
+  }
+
+  drawPickups();
+  drawPlayer();
+  if (!QUALITY.simple) drawParticles();
+}
+
+/* =========================================================================
+   10) HUD (PLACAR NA TELA)
+   As escritas no DOM só acontecem quando o valor muda — escrever todo quadro
+   dispara recálculo de estilo/layout e faz o jogo engasgar.
+   ========================================================================= */
+const hudCache = { score: -1, kmh: -1, best: -1, state: '', pct: -1 };
+
+/* Contador de FPS (opcional): tecle L para mostrar/ocultar. */
+let showFps = false;
+const fpsEl = document.createElement('div');
+fpsEl.style.cssText =
+  'position:absolute;left:10px;bottom:10px;z-index:9;font:12px monospace;' +
+  'color:#7CFFB2;background:rgba(0,0,0,0.55);padding:4px 8px;border-radius:6px;' +
+  'pointer-events:none;display:none';
+const stage = document.querySelector('.stage') || document.body;
+stage.appendChild(fpsEl);
+
+function toggleFps() {
+  showFps = !showFps;
+  fpsEl.style.display = showFps ? 'block' : 'none';
+}
+
+function updateFPS() {
+  if (!showFps) return;
+  const fps = 1000 / Math.max(1, QUALITY.avgFrame);
+  fpsEl.textContent =
+    `${fps.toFixed(0)} fps  |  buffer ${canvas.width}x${canvas.height}` +
+    `  |  escala ${QUALITY.dpr.toFixed(2)}`;
+}
+
+function updateHUD() {
+  const score = Math.floor(state.score);
+  if (score !== hudCache.score) {
+    hudCache.score = score;
+    scoreEl.textContent = score;
+  }
+
+  // Conversão "de pixels para km/h" só para ficar bonito
+  const kmh = Math.round(state.roadSpeed * 0.28);
+  if (kmh !== hudCache.kmh) {
+    hudCache.kmh = kmh;
+    if (speedNumEl) speedNumEl.textContent = kmh;
+    else speedEl.innerHTML = `${kmh} <small>km/h</small>`;
+  }
+
+  const hudState = state.accelerating ? 'boost' : state.braking ? 'brake' : 'cruise';
+  if (hudState !== hudCache.state) {
+    hudCache.state = hudState;
+    speedEl.dataset.state = hudState;
+  }
+
+  // Barra de velocidade (mínima → máxima) — usa transform (não provoca layout)
+  if (speedFill) {
+    const pct = ((state.roadSpeed - CONFIG.ROAD_SPEED_MIN) /
+                 (CONFIG.ROAD_SPEED_MAX - CONFIG.ROAD_SPEED_MIN)) * 100;
+    const p = Math.max(0, Math.min(100, pct));
+    if (Math.abs(p - hudCache.pct) > 0.5) {
+      hudCache.pct = p;
+      speedFill.style.transform = `scaleX(${p / 100})`;
+    }
+  }
+
+  const best = Math.floor(state.best);
+  if (best !== hudCache.best) {
+    hudCache.best = best;
+    bestEl.textContent = best;
+  }
+}
+
+/** Mostra um aviso temporário no topo da tela. */
+let toastTimeout = null;
+function showToast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add('toast--visible');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => toastEl.classList.remove('toast--visible'), 1600);
+}
+
+/* =========================================================================
+   11) LOOP PRINCIPAL
+   O requestAnimationFrame chama `loop` ~60x por segundo. Calculamos o tempo
+   decorrido (dt) para que a física funcione igual em qualquer monitor.
+   ========================================================================= */
+let lastTime = 0;
+
+function loop(timestamp) {
+  if (!lastTime) lastTime = timestamp;
+  const raw = timestamp - lastTime;                      // tempo real do quadro
+  const dt = Math.min(raw / 1000, 0.05);                 // limita "saltos" de quadro
+  lastTime = timestamp;
+
+  // Se o quadro está lento, baixa a resolução do canvas (e vice-versa).
+  // Feito ANTES de desenhar para não deixar um quadro em branco.
+  adaptQuality(raw);
+  if (showFps) updateFPS();
+
+  update(dt);
+  render();
+
+  requestAnimationFrame(loop);
+}
+
+/* =========================================================================
+   12) INICIALIZAÇÃO
+   ========================================================================= */
+/** Leitura/escrita segura no localStorage (alguns navegadores bloqueiam em file://). */
+const storage = {
+  get(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (_) {
+      return null;
+    }
+  },
+  set(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (_) {
+      /* sem persistência — o jogo continua funcionando */
+    }
+  },
+};
+
+/** Chave do recorde no localStorage (as antigas chaves do Neon Racer são migradas). */
+const BEST_KEY = 'cepKRacerBest';
+const LEGACY_BEST_KEYS = ['neonRacerBest'];
+
+/** Lê o recorde salvo (aceita chaves antigas para não perder o recorde). */
+function readBest() {
+  const current = storage.get(BEST_KEY);
+  if (current !== null && current !== undefined) return Number(current) || 0;
+  for (const key of LEGACY_BEST_KEYS) {
+    const legacy = storage.get(key);
+    if (legacy !== null && legacy !== undefined) {
+      const value = Number(legacy) || 0;
+      storage.set(BEST_KEY, String(value));   // migra para a nova chave
+      return value;
+    }
+  }
+  return 0;
+}
+
+function init() {
+  // Se o navegador não suportar Canvas 2D, avisa em vez de mostrar tela preta
+  if (!ctx) {
+    document.body.innerHTML =
+      '<p style="color:#fff;font:16px sans-serif;padding:24px">' +
+      'Seu navegador não suporta Canvas 2D. Tente Chrome, Firefox ou Edge.</p>';
+    return;
+  }
+
+  // Parâmetros de URL (úteis para máquinas lentas):
+  //   ?dpr=0.6  → força a resolução do canvas
+  //   ?leve=1   → modo simplificado (sem listras, metade da decoração)
+  //   ?fps=1    → mostra o contador de FPS
+  try {
+    const params = new URLSearchParams(location.search);
+    if (params.has('dpr')) {
+      const d = Number(params.get('dpr'));
+      if (d > 0.2 && d <= 2) {
+        QUALITY.dpr = d;
+        QUALITY.locked = true;
+      }
+    }
+    if (params.get('leve') === '1') QUALITY.simple = true;
+    if (params.get('fps') === '1') { showFps = true; fpsEl.style.display = 'block'; }
+  } catch (_) {
+    /* URLSearchParams indisponível — segue com o padrão */
+  }
+
+  // Calcula o tamanho do canvas e a geometria da pista
+  layout();
+
+  // Carrega o recorde salvo (migrando chaves antigas, se houver)
+  state.best = readBest();
+  updateHUD();
+
+  // Tela inicial
+  showOverlay(
+    'CEPK RACER',
+    'A corrida oficial do <strong>CEPK</strong>!<br />' +
+    'Desvie dos carros que descem na pista e mostre que você é o<br />' +
+    'piloto número 1 do <strong>CEPK</strong>.<br />' +
+    '<kbd>&larr;</kbd> <kbd>&rarr;</kbd> movem &nbsp;•&nbsp; <kbd>&uarr;</kbd> acelera ' +
+    '&nbsp;•&nbsp; <kbd>&darr;</kbd> freia &nbsp;•&nbsp; <kbd>Espaço</kbd> pula<br />' +
+    'Pegue os escudos verdes (S) para ficar invulnerável.<br />' +
+    '<small>clique em Jogar — ou aguarde, o jogo começa sozinho</small>',
+    'Jogar'
+  );
+
+  // Começa sozinho em 5 segundos se ninguém clicar
+  scheduleAutoStart(5000);
+
+  requestAnimationFrame(loop);
+}
+
+/* =========================================================================
+   12.1) TRATAMENTO DE ERROS
+   Se algo quebrar, mostramos o motivo na tela em vez de deixar tudo preto.
+   ========================================================================= */
+window.addEventListener('error', (e) => {
+  showOverlay(
+    'ERRO',
+    `Algo impede o jogo de rodar:<br /><small>${e.message}</small>`,
+    'Recarregar'
+  );
+  btnStart.onclick = () => location.reload();
+});
+
+/* =========================================================================
+   12.2) INÍCIO AUTOMÁTICO
+   Se o usuário não clicar em "Jogar", a partida começa sozinha depois de
+   alguns segundos — assim a página nunca fica "parada" parecendo quebrada.
+   ========================================================================= */
+let autoStartTimer = null;
+
+function scheduleAutoStart(delay = 5000) {
+  clearTimeout(autoStartTimer);
+  autoStartTimer = setTimeout(() => {
+    if (!state.running && !state.over) {
+      overlay.hidden = true;
+      startGame();
+    }
+  }, delay);
+}
+
+init();
