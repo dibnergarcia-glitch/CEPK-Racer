@@ -38,8 +38,10 @@
         <button class="icon-btn" id="btnFullscreen" title="Tela cheia (F)" aria-label="Tela cheia">⛶</button>
       </header>
 
-      <!-- Telas de sobreposição (início / pausa / game over) -->
-      <div class="overlay" id="overlay">
+      <!-- Telas de sobreposição (início / pausa / game over).
+           `hidden` vem por padrão: a tela de início só aparece quando o
+           jogo é aberto (via init → showOverlay), nunca antes. -->
+      <div class="overlay" id="overlay" hidden>
         <div class="panel">
           <img class="panel__logo" src="icon.svg" alt="Escudo do CEPK" width="96" height="96" />
           <h1 class="panel__title" id="overlayTitle">CEPK RACER</h1>
@@ -50,8 +52,20 @@
           </p>
           <div class="panel__actions">
             <button class="btn" id="btnStart">Jogar</button>
-            <!-- Baixa o jogo completo num único arquivo (HTML autocontido) -->
-            <a class="btn btn--download" id="btnDownload" href="jogo-completo.html" download="CEPK-Racer.html" title="Baixar o jogo completo em um único arquivo">⬇ Baixar o jogo</a>
+          </div>
+          <p class="panel__school">Jogo oficial do <strong>CEPK</strong></p>
+        </div>
+      </div>
+
+      <!-- Tela de GAME OVER (aparece quando o jogador bate o carro) -->
+      <div class="overlay" id="overlayGameOver" hidden>
+        <div class="panel">
+          <img class="panel__logo" src="icon.svg" alt="Escudo do CEPK" width="96" height="96" />
+          <h1 class="panel__title" id="overlayGameOverTitle">GAME OVER</h1>
+          <div class="panel__stats" id="overlayGameOverStats"></div>
+          <p class="panel__text" id="overlayGameOverText"></p>
+          <div class="panel__actions">
+            <button class="btn" id="btnGameOverStart">Jogar novamente</button>
           </div>
           <p class="panel__school">Jogo oficial do <strong>CEPK</strong></p>
         </div>
@@ -75,8 +89,7 @@
       <p class="hint">
         Mover: <kbd>&larr;</kbd> <kbd>&rarr;</kbd> &nbsp;|&nbsp;
         Acelerar: <kbd>&uarr;</kbd> &nbsp;|&nbsp; Frear: <kbd>&darr;</kbd> &nbsp;|&nbsp;
-        Pular: <kbd>Espaço</kbd> &nbsp;|&nbsp; Pausar: <kbd>P</kbd> &nbsp;|&nbsp;
-        Reiniciar: <kbd>R</kbd> &nbsp;|&nbsp; Tela cheia: <kbd>F</kbd>
+        Pausar: <kbd>P</kbd> &nbsp;|&nbsp; Reiniciar: <kbd>R</kbd> &nbsp;|&nbsp; Tela cheia: <kbd>F</kbd>
       </p>
     </div>
   </main>

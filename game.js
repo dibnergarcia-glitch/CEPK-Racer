@@ -53,10 +53,6 @@ const CONFIG = {
   PLAYER_BASE_Y: 610,    // altura base do rodapé (sem pulo)
   PLAYER_COLOR: '#22c55e', // verde do CEPK
 
-  // --- Pulo ---
-  JUMP_VELOCITY: 560,    // impulso inicial do pulo (px/s)
-  JUMP_GRAVITY: 1500,    // gravidade (px/s²)
-
   // --- Obstáculos ---
   SPAWN_INTERVAL_START: 1.05, // segundos entre surgimentos no começo
   SPAWN_INTERVAL_MIN: 0.36,   // limite mínimo de segundos entre surgimentos
@@ -150,6 +146,11 @@ const overlayText = document.getElementById('overlayText');
 const btnStart = document.getElementById('btnStart');
 const btnFullscreen = document.getElementById('btnFullscreen');
 const toastEl = document.getElementById('toast');
+const overlayGameOver = document.getElementById('overlayGameOver');
+const overlayGameOverTitle = document.getElementById('overlayGameOverTitle');
+const overlayGameOverStats = document.getElementById('overlayGameOverStats');
+const overlayGameOverText = document.getElementById('overlayGameOverText');
+const btnGameOverStart = document.getElementById('btnGameOverStart');
 
 /* -------------------------------------------------------------------------
    TAMANHO DO CANVAS (DINÂMICO)
@@ -263,8 +264,6 @@ const player = {
   x: W / 2,                 // posição horizontal (centro do carrinho)
   y: CONFIG.PLAYER_BASE_Y, // posição vertical base (rodapé da tela)
   vx: 0,                   // velocidade lateral
-  jumpY: 0,                // altura do pulo (px, 0 = no chão)
-  jumpV: 0,                // velocidade vertical do pulo
 };
 
 let obstacles = [];  // carros inimigos
@@ -425,9 +424,6 @@ function keyDownHandler(e) {
   }
   keys[e.key] = true;
 
-  if (e.key === ' ' && state.running && !state.paused && player.jumpY === 0) {
-    player.jumpV = CONFIG.JUMP_VELOCITY; // pulo
-  }
   if (e.key === 'p' || e.key === 'P') togglePause();
   if (e.key === 'r' || e.key === 'R') startGame();
   if (e.key === 'f' || e.key === 'F') toggleFullscreen();
@@ -499,8 +495,6 @@ function startGame() {
   player.x = laneCenter(Math.floor(LANES / 2));   // centro da faixa do meio
   player.y = CONFIG.PLAYER_BASE_Y;
   player.vx = 0;
-  player.jumpY = 0;
-  player.jumpV = 0;
 
   obstacles = [];
   pickups = [];
@@ -509,6 +503,7 @@ function startGame() {
 
   buildDecor();
   overlay.hidden = true;
+  overlayGameOver.hidden = true;   // tanta a tela de início quanto a de game over
   hudCache.score = -1;   // força a atualização do HUD na próxima quadro
   hudCache.kmh = -1;
   hudCache.best = -1;
@@ -537,19 +532,20 @@ function gameOver() {
     storage.set(BEST_KEY, String(state.best));
   }
 
-  showOverlay(
-    'GAME OVER',
-    `<div class="panel__stats">
-       <div><span>Pontos</span><strong>${Math.floor(state.score)}</strong></div>
-       <div><span>Distância</span><strong>${Math.floor(state.distance)}m</strong></div>
-       <div><span>Desvios</span><strong>${state.dodges}</strong></div>
-       <div><span>Vel. máx.</span><strong>${Math.round(state.maxSpeed * 0.28)} km/h</strong></div>
-       <div><span>Recorde</span><strong>${Math.floor(state.best)}</strong></div>
-     </div>
-     Domine a pista do <strong>CEPK</strong>!<br />
-     Pressione <kbd>R</kbd> ou o botão para jogar de novo.`,
-    'Jogar novamente'
-  );
+  /* Tela de GAME OVER — tela separada da de início: aparece quando o
+     jogador bate o carro. */
+  overlayGameOverTitle.textContent = 'GAME OVER';
+  overlayGameOverStats.innerHTML = `
+    <div><span>Pontos</span><strong>${Math.floor(state.score)}</strong></div>
+    <div><span>Distância</span><strong>${Math.floor(state.distance)}m</strong></div>
+    <div><span>Desvios</span><strong>${state.dodges}</strong></div>
+    <div><span>Vel. máx.</span><strong>${Math.round(state.maxSpeed * 0.28)} km/h</strong></div>
+    <div><span>Recorde</span><strong>${Math.floor(state.best)}</strong></div>
+  `;
+  overlayGameOverText.innerHTML = `Domine a pista do <strong>CEPK</strong>!<br />
+    Pressione <kbd>R</kbd> ou o botão para jogar de novo.`;
+  btnGameOverStart.textContent = 'Jogar novamente';
+  overlayGameOver.hidden = false;
 }
 
 function showOverlay(title, html, buttonLabel) {
@@ -559,13 +555,7 @@ function showOverlay(title, html, buttonLabel) {
   overlay.hidden = false;
 }
 
-btnStart.addEventListener('click', () => {
-  // Se estiver pausado, o botão apenas continua.
-  if (state.paused) {
-    togglePause();
-    return;
-  }
-
+function goToGame() {
   // Tenta ocupar a tela inteira — mas só quando a página é servida por
   // http(s). Em file:// alguns navegadores bloqueiam o pedido e a página
   // pode piscar/preencher de preto; nesses casos use o botão ⛶ ou a tecla F.
@@ -574,30 +564,22 @@ btnStart.addEventListener('click', () => {
   }
 
   startGame();
+}
+
+btnStart.addEventListener('click', () => {
+  // Se estiver pausado, o botão apenas continua.
+  if (state.paused) {
+    togglePause();
+    return;
+  }
+
+  goToGame();
 });
 
-/* Botão "Baixar o jogo".
-   Na versão normal (index.html + jogo-completo.html), o link aponta para
-   o arquivo único e baixa normalmente. Já no arquivo único baixado, o link
-   relativo quebraria — então interceptamos o clique e baixamos uma cópia
-   do próprio documento (funciona até offline em file://). */
-const btnDownload = document.getElementById('btnDownload');
-if (btnDownload) {
-  btnDownload.addEventListener('click', (e) => {
-    if (document.documentElement.dataset.singleFile !== '1') return; // href normal
-    e.preventDefault();
-    const html = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'CEPK-Racer.html';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  });
-}
+/* Botão "Jogar novamente" da tela de game over */
+btnGameOverStart.addEventListener('click', () => goToGame());
+
+/* O botão "Baixar o jogo" foi removido desta versão do jogo. */
 
 /* =========================================================================
    6) GERAÇÃO DO CENÁRIO E DOS OBSTÁCULOS
@@ -728,16 +710,6 @@ function update(dt) {
   if (player.x < minX) { player.x = minX; player.vx = 0; }
   if (player.x > maxX) { player.x = maxX; player.vx = 0; }
 
-  // --- 7.3 Pulo ----------------------------------------------------------
-  if (player.jumpY > 0 || player.jumpV > 0) {
-    player.jumpY += player.jumpV * dt;
-    player.jumpV -= CONFIG.JUMP_GRAVITY * dt;
-    if (player.jumpY <= 0) {
-      player.jumpY = 0;
-      player.jumpV = 0;
-    }
-  }
-
   // --- 7.4 Espuma/fumaça atrás do carrinho -------------------------------
   if (Math.abs(player.vx) > 120 && Math.random() < 0.6) {
     spawnParticle(player.x, player.y + PLAYER_H / 2 - 4, {
@@ -821,7 +793,7 @@ function update(dt) {
 
     // Colisão do jogador com o item
     const dx = player.x - p.x;
-    const dy = (player.y - player.jumpY) - p.y;
+    const dy = player.y - p.y;
     if (Math.hypot(dx, dy) < p.r + 18) {
       state.shieldTimer = CONFIG.SHIELD_DURATION;
       state.score += CONFIG.POINTS_PER_PICKUP;
@@ -849,11 +821,11 @@ function update(dt) {
   updateHUD();
 }
 
-/** Retângulo de colisão do jogador (considera o pulo). */
+/** Retângulo de colisão do jogador. */
 function playerRect() {
   return {
     x: player.x - PLAYER_W / 2,
-    y: player.y - player.jumpY - PLAYER_H / 2,
+    y: player.y - PLAYER_H / 2,
     w: PLAYER_W,
     h: PLAYER_H,
   };
@@ -1153,13 +1125,13 @@ function drawPickups() {
   }
 }
 
-/** Desenha o jogador (com escudo e sombra de pulo). */
+/** Desenha o jogador (com escudo e sombra). */
 function drawPlayer() {
-  const y = player.y - player.jumpY;
+  const y = player.y;
 
-  // Sombra no chão (some quando o carro está no alto do pulo)
+  // Sombra no chão
   ctx.save();
-  ctx.globalAlpha = Math.max(0.15, 0.45 - player.jumpY / 260);
+  ctx.globalAlpha = 0.45;
   ctx.fillStyle = '#000';
   ctx.beginPath();
   ctx.ellipse(player.x, player.y + PLAYER_H / 2 + 6, PLAYER_W * 0.5, 9, 0, 0, Math.PI * 2);
@@ -1398,7 +1370,7 @@ function init() {
     'Desvie dos carros que descem na pista e mostre que você é o<br />' +
     'piloto número 1 do <strong>CEPK</strong>.<br />' +
     '<kbd>&larr;</kbd> <kbd>&rarr;</kbd> movem &nbsp;•&nbsp; <kbd>&uarr;</kbd> acelera ' +
-    '&nbsp;•&nbsp; <kbd>&darr;</kbd> freia &nbsp;•&nbsp; <kbd>Espaço</kbd> pula<br />' +
+    '&nbsp;•&nbsp; <kbd>&darr;</kbd> freia<br />' +
     'Pegue os escudos verdes (S) para ficar invulnerável.<br />' +
     '<small>clique em Jogar — ou aguarde, o jogo começa sozinho</small>',
     'Jogar'

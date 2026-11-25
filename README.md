@@ -26,28 +26,6 @@ obstáculo.
 
 ---
 
-## ⬇️ Baixar o jogo
-
-Dentro do jogo, na tela inicial (ou em qualquer tela de pausa/fim de jogo),
-clique no botão verde **⬇ Baixar o jogo**.
-
-Ele baixa o **`jogo-completo.html`** — uma versão em **arquivo único**,
-com CSS, JavaScript e o ícone do CEPK embutidos. Esse arquivo funciona
-sozinho: basta abrir no navegador, funciona **offline** e pode ser enviado
-por e-mail, WhatsApp, pen drive etc., sem precisar de mais nada.
-
-> Quem abrir o arquivo baixado e clicar de novo em **⬇ Baixar o jogo**
-> recebe uma cópia idêntica do próprio arquivo (o botão continua
-> funcionando offline).
-
-Para gerar a versão de arquivo único depois de editar o código:
-
-```bash
-node build-single-file.js
-```
-
----
-
 ## ▶️ Como abrir
 
 > ⚠️ **Neste ambiente há um detalhe importante:** os navegadores estão
@@ -99,7 +77,6 @@ Depois acesse <http://localhost:8000> no navegador.
 | Mover o carrinho | `←` `→` ou `A` `D` | botões na tela / arrastar o dedo |
 | **Acelerar** | `↑` ou `W` | botão ▲ |
 | **Frear** | `↓` ou `S` | botão ▼ |
-| Pular | `Espaço` | — |
 | Pausar | `P` | — |
 | Reiniciar | `R` | botão na tela de fim de jogo |
 | Tela cheia | `F` | botão **⛶** |

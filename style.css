@@ -299,40 +299,13 @@ canvas {
   transform: translateY(0);
 }
 
-/* Fileira de botões do painel (Jogar + Baixar o jogo) */
+/* Fileira de botões do painel (apenas o botão Jogar) */
 .panel__actions {
   display: flex;
   justify-content: center;
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-}
-
-/* Botão secundário: baixar o jogo (verde, combina com o escudo do CEPK) */
-.btn--download {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  text-decoration: none;
-  color: #04150a;
-  background: linear-gradient(90deg, #22c55e, #4ade80);
-  border: 0;
-  border-radius: 999px;
-  padding: 12px 22px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  box-shadow: 0 8px 24px rgba(34, 197, 94, 0.35);
-  transition: transform 0.12s ease, box-shadow 0.12s ease;
-}
-
-.btn--download:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 12px 30px rgba(34, 197, 94, 0.45);
-}
-
-.btn--download:active {
-  transform: translateY(0);
 }
 
 /* Assinatura do CEPK no rodapé do painel */

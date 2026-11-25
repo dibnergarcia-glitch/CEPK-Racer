@@ -4,8 +4,7 @@
  * Confere a regra de colisão por faixa:
  *  - o jogador encostado na BORDA da pista TEM que ser atingido pelo carro
  *    que vem na mesma faixa (era o bug: o carro "passava direto");
- *  - o jogador NÃO pode ser atingido por um carro de outra faixa;
- *  - pular por cima do carro continua funcionando.
+ *  - o jogador NÃO pode ser atingido por um carro de outra faixa.
  *
  * Uso: node testes/colisao.test.js
  */
@@ -61,11 +60,7 @@ const ok = run(`
     log('carro acima do jogador não colide',
         !checkCollision(obstacleInLane(0, player.y - 400)));
 
-    // 6) Pulo por cima do carro
-    player.jumpY = 200;
-    const pulou = !checkCollision(obstacleInLane(0));
-    player.jumpY = 0;
-    log('pulo por cima do carro funciona', pulou);
+    // 6) Pulos foram removidos do jogo — sem pulo, colisão normal.
 
     console.log('\\nResultado: ' + (out.every(Boolean) ? 'OK' : 'FALHA'));
     return out.every(Boolean);

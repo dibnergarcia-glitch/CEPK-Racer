@@ -10,8 +10,7 @@
  *   ícones estarem na mesma pasta e de o navegador permitir scripts locais.
  *   A versão de arquivo único não depende de nada: é um único `.html`
  *   autocontido (CSS, JS e ícone embutidos), perfeito para compartilhar,
- *   e-mailar ou abrir em qualquer máquina — é a versão que o botão
- *   "Baixar o jogo" entrega ao usuário.
+ *   e-mailar ou abrir em qualquer máquina — é a versão de arquivo único.
  *
  * Uso:  node build-single-file.js
  */
@@ -52,8 +51,8 @@ const output = html
     '<script src="game.js"></script>',
     `<script>\n${js}\n  </script>`
   )
-  // Marca a página como "arquivo único": o botão "Baixar o jogo" usa
-  // esta marcação para baixar uma cópia do próprio documento.
+  // Marca a página como "arquivo único": serve para gerar cópias do
+  // próprio documento (caso queira distribuir o jogo em arquivo único).
   .replace('<html lang="pt-BR">', '<html lang="pt-BR" data-single-file="1">')
   .split('"icon.svg"').join(`"${iconSvg}"`)
   .split('"icon.png"').join(`"${iconPng}"`)
